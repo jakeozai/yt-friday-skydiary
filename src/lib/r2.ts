@@ -3,6 +3,7 @@ export async function uploadToR2(
   walkId: string,
   elapsedSec: number
 ): Promise<string | null> {
+  const uploadTimeoutMs = 5_000;
   const accountId = process.env.CF_ACCOUNT_ID;
   const accessKeyId = process.env.CF_ACCESS_KEY_ID;
   const secretAccessKey = process.env.CF_SECRET_ACCESS_KEY;
@@ -68,6 +69,7 @@ export async function uploadToR2(
         Authorization: authHeader,
       },
       body: imageBuffer,
+      signal: AbortSignal.timeout(uploadTimeoutMs),
     });
 
     if (!res.ok) return null;

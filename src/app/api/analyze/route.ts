@@ -7,6 +7,8 @@ export const maxDuration = 30;
 
 const MAX_IMAGE_BASE64_CHARS = 900_000;
 const WALK_ID_PATTERN = /^[a-zA-Z0-9_-]{1,80}$/;
+const GEMINI_MODEL = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
+const GEMINI_TIMEOUT_MS = 15_000;
 
 const fallbackLines = [
   '산책 중이에요. 아이 눈높이에서 주변을 천천히 보고 있어요.',
@@ -70,17 +72,33 @@ ${devContext}
     };
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
 
-    const [result, image_url] = await Promise.all([
+    // Image storage is optional. A slow R2 upload must never block narration.
+    const [analysisResult, uploadResult] = await Promise.allSettled([
       Promise.race([
         model.generateContent([prompt, imagePart]),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 25000)),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Gemini analysis timeout')), GEMINI_TIMEOUT_MS)
+        ),
       ]),
       shouldUpload ? uploadToR2(imageBase64, walkId, elapsedSec) : Promise.resolve(null),
     ]);
 
-    const text = result.response.text().trim();
+    const image_url = uploadResult.status === 'fulfilled' ? uploadResult.value : null;
+
+    if (analysisResult.status === 'rejected') {
+      console.error('[analyze] Gemini failed, using fallback:', analysisResult.reason);
+      const text = fallbackLines[Math.floor(Math.random() * fallbackLines.length)];
+      return NextResponse.json({ text, image_url, source: 'fallback' });
+    }
+
+    const text = analysisResult.value.response.text().trim();
+    if (!text) {
+      const fallbackText = fallbackLines[Math.floor(Math.random() * fallbackLines.length)];
+      return NextResponse.json({ text: fallbackText, image_url, source: 'fallback' });
+    }
+
     return NextResponse.json({ text, image_url, source: 'gemini' });
   } catch (err) {
     console.error('[analyze]', err);

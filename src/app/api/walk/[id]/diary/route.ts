@@ -5,6 +5,27 @@ import { createServerSupabase, hasServerSupabaseConfig } from '@/lib/supabase/se
 
 // Extend Vercel function timeout — diary generation via Gemini can take 20-30s
 export const maxDuration = 60;
+const GEMINI_MODEL = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
+const GEMINI_TIMEOUT_MS = 30_000;
+
+function createFallbackDiary(
+  babyName: string,
+  weather: string,
+  durationMin: number,
+  observations: Array<{ description: string }>
+) {
+  const scenes = observations
+    .slice(0, 3)
+    .map((observation) => observation.description.trim())
+    .filter(Boolean)
+    .join(' ');
+
+  if (scenes) {
+    return `오늘 ${babyName}와 ${weather} 날씨 속에서 ${durationMin}분 동안 천천히 걸었다. ${scenes} 익숙한 길도 ${babyName}의 눈높이에서 바라보니 새롭게 느껴졌다. 함께 바람을 느끼고 주변을 바라본 이 시간이 작지만 다정한 추억으로 오래 남기를 바란다.`;
+  }
+
+  return `오늘 ${babyName}와 ${weather} 날씨 속에서 ${durationMin}분 동안 산책했다. 특별한 해설 기록은 남지 않았지만, 함께 바깥 공기를 마시고 천천히 걸은 시간만으로도 충분히 소중했다. ${babyName}가 품에서 느꼈을 바람과 빛, 곁을 지켜준 온기를 오래 기억하고 싶다.`;
+}
 
 function getDiaryDevelopmentalGuidance(months: number): string {
   if (months < 1) return '빛과 소리, 온도처럼 감각으로 느끼는 세상을 중심으로 표현해주세요. 이 시기는 엄마 아빠의 목소리와 온기가 세상의 전부예요.';
@@ -30,10 +51,6 @@ export async function POST(
     return NextResponse.json({ error: 'not configured' }, { status: 503 });
   }
 
-  if (!process.env.GEMINI_API_KEY) {
-    return NextResponse.json({ error: 'GEMINI_API_KEY missing' }, { status: 503 });
-  }
-
   let weather: string | null = null;
   let clientBabyName: string | null = null;
   let clientBirthDate: string | null = null;
@@ -47,12 +64,14 @@ export async function POST(
   const supabase = createServerSupabase();
 
   try {
-    await supabase
+    const { error: generatingError } = await supabase
       .from('walks')
       .update({ diary_status: 'generating', ...(weather ? { weather } : {}) })
       .eq('id', walkId);
 
-    const [{ data: walk }, { data: observations }, { data: settings }] = await Promise.all([
+    if (generatingError) throw generatingError;
+
+    const [walkResult, observationsResult, settingsResult] = await Promise.all([
       supabase.from('walks').select('*').eq('id', walkId).single(),
       supabase
         .from('observations')
@@ -62,9 +81,14 @@ export async function POST(
       supabase.from('baby_settings').select('*').eq('id', 'singleton').single(),
     ]);
 
-    if (!walk) {
+    const { data: walk, error: walkError } = walkResult;
+    const { data: observations, error: observationsError } = observationsResult;
+    const { data: settings } = settingsResult;
+
+    if (walkError || !walk) {
       return NextResponse.json({ error: 'walk not found' }, { status: 404 });
     }
+    if (observationsError) throw observationsError;
 
     const babyName: string = settings?.baby_name ?? clientBabyName ?? '아기';
     const babyAgeDays: number = settings?.birth_date
@@ -114,23 +138,33 @@ ${devGuidance}
 - 300~400자 분량으로 써주세요.
 - 제목 없이 본문만 작성해주세요.`;
 
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
-      generationConfig: {
-        temperature: 0.8,
-        maxOutputTokens: 600,
-      },
-    });
+    let diary: string;
+    let source: 'gemini' | 'fallback' = 'gemini';
+    try {
+      if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY missing');
+      const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+      const model = genAI.getGenerativeModel({
+        model: GEMINI_MODEL,
+        generationConfig: {
+          temperature: 0.8,
+          maxOutputTokens: 600,
+        },
+      });
+      const result = await Promise.race([
+        model.generateContent(prompt),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Gemini diary timeout')), GEMINI_TIMEOUT_MS)
+        ),
+      ]);
+      diary = result.response.text().trim();
+      if (!diary) throw new Error('Gemini returned an empty diary');
+    } catch (error) {
+      console.error('[diary] Gemini failed, using fallback:', error);
+      diary = createFallbackDiary(babyName, weatherStr, durationMin, observations ?? []);
+      source = 'fallback';
+    }
 
-    const result = await Promise.race([
-      model.generateContent(prompt),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 55000)),
-    ]);
-
-    const diary = result.response.text().trim();
-
-    await supabase
+    const { error: updateError } = await supabase
       .from('walks')
       .update({
         diary,
@@ -141,7 +175,9 @@ ${devGuidance}
       })
       .eq('id', walkId);
 
-    return NextResponse.json({ diary });
+    if (updateError) throw updateError;
+
+    return NextResponse.json({ diary, source });
   } catch (err) {
     console.error('[diary]', err);
     await supabase.from('walks').update({ diary_status: 'failed' }).eq('id', walkId);

@@ -11,6 +11,20 @@ const JPEG_QUALITY = 0.5;
 
 type SubtitleEntry = { id: number; text: string; elapsed: number };
 
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = 20_000
+) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 // ─── Audio unlock (required for mobile browsers) ──────────────────────────────
 // iOS/Android block audio.play() unless called from a direct user gesture.
 // We keep a singleton AudioContext that is resumed on the first user tap.
@@ -71,11 +85,11 @@ function speakKorean(text: string): Promise<void> {
 
 async function playApiTts(text: string): Promise<boolean> {
   try {
-    const res = await fetch('/api/tts', {
+    const res = await fetchWithTimeout('/api/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
-    });
+    }, 12_000);
     if (!res.ok) return false;
 
     const arrayBuffer = await res.arrayBuffer();
@@ -118,6 +132,7 @@ export default function WalkPage() {
   const elapsedRef = useRef(0);
   const subtitleCountRef = useRef(0);
   const historyRef = useRef<HTMLDivElement>(null);
+  const analysisTaskRef = useRef<Promise<void> | null>(null);
   // Resolves when user taps the start button (to unlock audio before analysis)
   const startResolveRef = useRef<(() => void) | null>(null);
 
@@ -128,6 +143,7 @@ export default function WalkPage() {
   const [errorMsg, setErrorMsg] = useState('');
   const [voiceReady, setVoiceReady] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [pipelineNotice, setPipelineNotice] = useState('');
 
   const formatTime = (s: number) =>
     `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
@@ -148,9 +164,12 @@ export default function WalkPage() {
     setIsAnalyzing(true);
     try {
       const imageBase64 = captureFrame();
-      if (!imageBase64) return;
+      if (!imageBase64) {
+        setPipelineNotice('카메라 화면을 읽지 못했어요. 잠시 후 다시 시도할게요.');
+        return;
+      }
 
-      const analyzeRes = await fetch('/api/analyze', {
+      const analyzeRes = await fetchWithTimeout('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -160,11 +179,13 @@ export default function WalkPage() {
           walkId: walkIdRef.current,
           elapsedSec: elapsedRef.current,
         }),
-      });
-      if (!analyzeRes.ok) return;
+      }, 22_000);
+      if (!analyzeRes.ok) {
+        throw new Error(`해설 API 오류 (${analyzeRes.status})`);
+      }
 
-      const { text, image_url } = await analyzeRes.json();
-      if (!text) return;
+      const { text, image_url, source } = await analyzeRes.json();
+      if (!text) throw new Error('해설 내용이 비어 있어요.');
 
       subtitleCountRef.current += 1;
       const entry: SubtitleEntry = {
@@ -174,7 +195,15 @@ export default function WalkPage() {
       };
       setSubtitles((prev) => [...prev, entry]);
 
-      fetch(`/api/walk/${walkIdRef.current}/observations`, {
+      if (source === 'fallback') {
+        setPipelineNotice('AI 연결이 불안정해 기본 해설로 기록했어요.');
+      } else {
+        setPipelineNotice('');
+      }
+
+      if (isActiveRef.current) void speak(text);
+
+      const observationRes = await fetchWithTimeout(`/api/walk/${walkIdRef.current}/observations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -182,9 +211,15 @@ export default function WalkPage() {
           description: text,
           image_url: image_url ?? null,
         }),
-      }).catch(() => {});
-
-      await speak(text);
+      }, 10_000);
+      if (!observationRes.ok) {
+        throw new Error(`해설 저장 오류 (${observationRes.status})`);
+      }
+    } catch (error) {
+      console.error('[walk pipeline]', error);
+      setPipelineNotice(
+        error instanceof Error ? error.message : '해설을 처리하지 못했어요. 잠시 후 다시 시도할게요.'
+      );
     } finally {
       setIsAnalyzing(false);
     }
@@ -253,7 +288,9 @@ export default function WalkPage() {
           body: JSON.stringify({ baby_age_days: babyAgeDaysRef.current }),
         });
         if (walkRes.status === 401) { router.replace('/login?next=/walk'); return; }
+        if (!walkRes.ok) throw new Error(`산책 생성 오류 (${walkRes.status})`);
         const walk = await walkRes.json();
+        if (!walk?.id) throw new Error('산책 ID를 받지 못했어요.');
         walkIdRef.current = walk.id;
 
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -297,7 +334,10 @@ export default function WalkPage() {
           await new Promise<void>((r) => setTimeout(r, INITIAL_DELAY_MS));
           while (active && isActiveRef.current) {
             const nextAt = Date.now() + CAPTURE_INTERVAL_MS;
-            await captureAndAnalyze();
+            const task = captureAndAnalyze();
+            analysisTaskRef.current = task;
+            await task;
+            if (analysisTaskRef.current === task) analysisTaskRef.current = null;
             const wait = nextAt - Date.now();
             if (wait > 0 && active && isActiveRef.current) {
               await new Promise<void>((r) => setTimeout(r, wait));
@@ -346,12 +386,23 @@ export default function WalkPage() {
 
     setStatus('generating');
     try {
-      await fetch(`/api/walk/${walkId}`, {
+      // Do not generate the diary before an in-flight observation is saved.
+      const activeAnalysis = analysisTaskRef.current;
+      if (activeAnalysis) {
+        await Promise.race([
+          activeAnalysis,
+          new Promise<void>((resolve) => setTimeout(resolve, 22_000)),
+        ]);
+      }
+
+      const endRes = await fetchWithTimeout(`/api/walk/${walkId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ end_time: new Date().toISOString() }),
-      });
-      const diaryRes = await fetch(`/api/walk/${walkId}/diary`, {
+      }, 10_000);
+      if (!endRes.ok) throw new Error(`산책 종료 저장 오류 (${endRes.status})`);
+
+      const diaryRes = await fetchWithTimeout(`/api/walk/${walkId}/diary`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -359,7 +410,7 @@ export default function WalkPage() {
           babyName: babyNameRef.current,
           birthDate: birthDateRef.current,
         }),
-      });
+      }, 45_000);
       if (!diaryRes.ok) {
         // diary failed but walk exists — navigate to walk page anyway (shows failed state)
         router.replace(`/walk/${walkId}`);
@@ -486,6 +537,11 @@ export default function WalkPage() {
 
           {/* Bottom: latest subtitle + controls */}
           <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-5 pb-10 pt-8">
+            {pipelineNotice && (
+              <p className="mb-3 rounded-xl bg-black/45 px-3 py-2 text-center text-xs text-amber-100">
+                {pipelineNotice}
+              </p>
+            )}
             {latestSubtitle ? (
               <p className="mb-5 px-2 text-center text-sm leading-relaxed text-white">
                 {latestSubtitle.text}
