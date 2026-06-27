@@ -3,6 +3,8 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { requireAuth } from '@/lib/auth';
 import { uploadToR2 } from '@/lib/r2';
 
+export const maxDuration = 30;
+
 const MAX_IMAGE_BASE64_CHARS = 900_000;
 const WALK_ID_PATTERN = /^[a-zA-Z0-9_-]{1,80}$/;
 

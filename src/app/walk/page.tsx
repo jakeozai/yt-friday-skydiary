@@ -11,7 +11,32 @@ const JPEG_QUALITY = 0.5;
 
 type SubtitleEntry = { id: number; text: string; elapsed: number };
 
-// ─── Browser TTS fallback ─────────────────────────────────────────────────────
+// ─── Audio unlock (required for mobile browsers) ──────────────────────────────
+// iOS/Android block audio.play() unless called from a direct user gesture.
+// We keep a singleton AudioContext that is resumed on the first user tap.
+let audioCtx: AudioContext | null = null;
+
+function getAudioContext(): AudioContext {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+  }
+  return audioCtx;
+}
+
+async function unlockAudio(): Promise<void> {
+  try {
+    const ctx = getAudioContext();
+    if (ctx.state === 'suspended') await ctx.resume();
+    // Play a silent buffer to fully unlock on iOS
+    const buffer = ctx.createBuffer(1, 1, 22050);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    source.start(0);
+  } catch {}
+}
+
+// ─── Browser TTS fallback ────────────────────────────────────────────────────
 
 function pickKoreanVoice() {
   if (!('speechSynthesis' in window)) return null;
@@ -40,7 +65,7 @@ function speakKorean(text: string): Promise<void> {
   });
 }
 
-// ─── API TTS via Gemini ───────────────────────────────────────────────────────
+// ─── API TTS ─────────────────────────────────────────────────────────────────
 
 async function playApiTts(text: string): Promise<boolean> {
   try {
@@ -56,6 +81,12 @@ async function playApiTts(text: string): Promise<boolean> {
       const blob = new Blob([arrayBuffer], { type: 'audio/mpeg' });
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
+      // Pipe through AudioContext so it uses the unlocked context
+      try {
+        const ctx = getAudioContext();
+        const source = ctx.createMediaElementSource(audio);
+        source.connect(ctx.destination);
+      } catch {}
       audio.onended = () => { URL.revokeObjectURL(url); resolve(true); };
       audio.onerror = () => { URL.revokeObjectURL(url); resolve(false); };
       audio.play().catch(() => { URL.revokeObjectURL(url); resolve(false); });
@@ -88,8 +119,10 @@ export default function WalkPage() {
   const elapsedRef = useRef(0);
   const subtitleCountRef = useRef(0);
   const historyRef = useRef<HTMLDivElement>(null);
+  // Resolves when user taps the start button (to unlock audio before analysis)
+  const startResolveRef = useRef<(() => void) | null>(null);
 
-  const [status, setStatus] = useState<'loading' | 'active' | 'generating' | 'error'>('loading');
+  const [status, setStatus] = useState<'loading' | 'ready' | 'active' | 'generating' | 'error'>('loading');
   const [elapsed, setElapsed] = useState(0);
   const [subtitles, setSubtitles] = useState<SubtitleEntry[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -158,13 +191,14 @@ export default function WalkPage() {
     }
   }, [captureFrame]);
 
-  // Auto-scroll history to bottom when new entry arrives
+  // Auto-scroll history to bottom
   useEffect(() => {
     if (historyRef.current) {
       historyRef.current.scrollTop = historyRef.current.scrollHeight;
     }
   }, [subtitles]);
 
+  // Re-acquire wake lock on visibility change
   useEffect(() => {
     const reacquire = async () => {
       if (document.visibilityState === 'visible' && 'wakeLock' in navigator) {
@@ -175,6 +209,7 @@ export default function WalkPage() {
     return () => document.removeEventListener('visibilitychange', reacquire);
   }, []);
 
+  // Pre-load browser TTS voices
   useEffect(() => {
     if (!('speechSynthesis' in window)) return;
     const mark = () => setVoiceReady(window.speechSynthesis.getVoices().length > 0);
@@ -230,6 +265,7 @@ export default function WalkPage() {
           },
           audio: false,
         });
+        if (!active) { stream.getTracks().forEach((t) => t.stop()); return; }
         streamRef.current = stream;
         if (videoRef.current) videoRef.current.srcObject = stream;
 
@@ -244,6 +280,12 @@ export default function WalkPage() {
           });
         });
 
+        // Show ready screen — wait for user tap to unlock audio before starting
+        setStatus('ready');
+        await new Promise<void>((resolve) => { startResolveRef.current = resolve; });
+        if (!active) return;
+
+        // User tapped: start timer and analysis loop
         timerRef.current = setInterval(() => {
           elapsedRef.current += 1;
           setElapsed(elapsedRef.current);
@@ -279,12 +321,19 @@ export default function WalkPage() {
     return () => {
       active = false;
       isActiveRef.current = false;
+      startResolveRef.current?.(); // unblock setup if waiting for tap
       streamRef.current?.getTracks().forEach((t) => t.stop());
       wakeLockRef.current?.release().catch(() => {});
       if (timerRef.current) clearInterval(timerRef.current);
       window.speechSynthesis?.cancel();
     };
   }, [captureAndAnalyze, router]);
+
+  const handleStart = useCallback(async () => {
+    // Unlock audio on this direct user gesture before analysis begins
+    await unlockAudio();
+    startResolveRef.current?.();
+  }, []);
 
   const handleStop = async () => {
     isActiveRef.current = false;
@@ -303,7 +352,7 @@ export default function WalkPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ end_time: new Date().toISOString() }),
       });
-      await fetch(`/api/walk/${walkId}/diary`, {
+      const diaryRes = await fetch(`/api/walk/${walkId}/diary`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -312,6 +361,11 @@ export default function WalkPage() {
           birthDate: birthDateRef.current,
         }),
       });
+      if (!diaryRes.ok) {
+        // diary failed but walk exists — navigate to walk page anyway (shows failed state)
+        router.replace(`/walk/${walkId}`);
+        return;
+      }
       router.replace(`/walk/${walkId}`);
     } catch {
       router.replace('/');
@@ -320,7 +374,7 @@ export default function WalkPage() {
 
   const latestSubtitle = subtitles[subtitles.length - 1];
 
-  // ── Always render video so srcObject is assignable during setup ──
+  // ── Always render video so srcObject can be set during setup ──
   return (
     <div className="relative h-screen overflow-hidden bg-black">
       <video
@@ -369,6 +423,23 @@ export default function WalkPage() {
       {status === 'loading' && (
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="text-sm text-white/60">카메라 준비 중...</div>
+        </div>
+      )}
+
+      {/* ── Ready overlay: tap to unlock audio and start ── */}
+      {status === 'ready' && (
+        <div className="absolute inset-0 flex flex-col items-end justify-end bg-black/30 pb-10">
+          <div className="w-full px-5">
+            <p className="mb-4 text-center text-sm text-white/70">
+              카메라가 준비됐어요. 시작하면 30초마다 해설이 시작됩니다.
+            </p>
+            <button
+              onClick={handleStart}
+              className="w-full rounded-2xl bg-green-400 py-5 text-lg font-bold text-white shadow-lg transition-transform active:scale-95"
+            >
+              해설 시작
+            </button>
+          </div>
         </div>
       )}
 
@@ -422,7 +493,7 @@ export default function WalkPage() {
               </p>
             ) : (
               <p className="mb-5 text-center text-xs text-white/40">
-                {isAnalyzing ? '분석 중입니다...' : '아이 눈높이로 주변을 기록하고 있어요.'}
+                {isAnalyzing ? '분석 중입니다...' : '5초 후 첫 해설이 시작돼요.'}
               </p>
             )}
 

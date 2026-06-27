@@ -3,6 +3,9 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { requireAuth } from '@/lib/auth';
 import { createServerSupabase, hasServerSupabaseConfig } from '@/lib/supabase/server';
 
+// Extend Vercel function timeout — diary generation via Gemini can take 20-30s
+export const maxDuration = 60;
+
 function getDiaryDevelopmentalGuidance(months: number): string {
   if (months < 1) return '빛과 소리, 온도처럼 감각으로 느끼는 세상을 중심으로 표현해주세요. 이 시기는 엄마 아빠의 목소리와 온기가 세상의 전부예요.';
   if (months < 3) return '움직이는 것과 밝은 빛에 반응하는 아이의 모습을 담아주세요. 엄마 아빠 얼굴을 알아보고 미소 짓기 시작하는 시기예요.';
