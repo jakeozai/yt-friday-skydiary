@@ -318,55 +318,9 @@ export default function WalkPage() {
     }
   };
 
-  // ── Error ──
-  if (status === 'error') {
-    return (
-      <div className="flex h-screen flex-col items-center justify-center bg-white p-6 text-center">
-        <p className="mb-4 text-5xl">!</p>
-        <p className="text-lg font-semibold text-gray-800">카메라를 사용할 수 없어요.</p>
-        <p className="mt-2 text-sm text-gray-400">{errorMsg}</p>
-        <button
-          onClick={() => router.back()}
-          className="mt-8 rounded-xl bg-green-300 px-8 py-3 font-medium text-white"
-        >
-          돌아가기
-        </button>
-      </div>
-    );
-  }
-
-  // ── Generating diary ──
-  if (status === 'generating') {
-    return (
-      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-[#FAFAF8]">
-        <p className="text-5xl">🌿</p>
-        <p className="text-lg font-semibold text-gray-800">일기를 쓰고 있어요</p>
-        <p className="text-sm text-gray-400">오늘 산책을 기록으로 남겨드릴게요...</p>
-        <div className="mt-4 flex gap-1">
-          {[0, 1, 2].map((i) => (
-            <span
-              key={i}
-              className="h-2 w-2 animate-bounce rounded-full bg-green-300"
-              style={{ animationDelay: `${i * 0.15}s` }}
-            />
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  // ── Loading ──
-  if (status === 'loading') {
-    return (
-      <div className="flex h-screen flex-col items-center justify-center bg-black">
-        <div className="text-sm text-white/60">카메라 준비 중...</div>
-      </div>
-    );
-  }
-
   const latestSubtitle = subtitles[subtitles.length - 1];
 
-  // ── Active walk ──
+  // ── Always render video so srcObject is assignable during setup ──
   return (
     <div className="relative h-screen overflow-hidden bg-black">
       <video
@@ -378,70 +332,115 @@ export default function WalkPage() {
       />
       <canvas ref={canvasRef} className="hidden" />
 
-      {/* Top bar */}
-      <div className="absolute left-0 right-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/60 to-transparent px-5 pb-6 pt-10">
-        <span className="font-mono text-2xl font-bold tracking-widest text-white">
-          {formatTime(elapsed)}
-        </span>
-        <div className="flex items-center gap-3">
-          {subtitles.length > 0 && (
-            <button
-              onClick={() => setShowHistory((v) => !v)}
-              className="rounded-full bg-white/20 px-3 py-1 text-xs text-white backdrop-blur-sm"
-            >
-              해설 {subtitles.length}회 {showHistory ? '▲' : '▼'}
-            </button>
-          )}
-          <span className="text-sm text-white/70">
-            {isAnalyzing ? '분석 중...' : ''}
-          </span>
+      {/* ── Error overlay ── */}
+      {status === 'error' && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-white p-6 text-center">
+          <p className="mb-4 text-5xl">!</p>
+          <p className="text-lg font-semibold text-gray-800">카메라를 사용할 수 없어요.</p>
+          <p className="mt-2 text-sm text-gray-400">{errorMsg}</p>
+          <button
+            onClick={() => router.back()}
+            className="mt-8 rounded-xl bg-green-300 px-8 py-3 font-medium text-white"
+          >
+            돌아가기
+          </button>
         </div>
-      </div>
+      )}
 
-      {/* History panel */}
-      {showHistory && subtitles.length > 0 && (
-        <div
-          ref={historyRef}
-          className="absolute left-0 right-0 top-20 mx-4 max-h-56 overflow-y-auto rounded-2xl bg-black/60 backdrop-blur-md"
-        >
-          <div className="space-y-2 p-3">
-            {subtitles.map((entry) => (
-              <div key={entry.id} className="flex gap-2">
-                <span className="mt-0.5 shrink-0 font-mono text-[10px] text-white/40">
-                  {formatTime(entry.elapsed)}
-                </span>
-                <p className="text-xs leading-relaxed text-white/80">{entry.text}</p>
-              </div>
+      {/* ── Generating diary overlay ── */}
+      {status === 'generating' && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-[#FAFAF8]">
+          <p className="text-5xl">🌿</p>
+          <p className="text-lg font-semibold text-gray-800">일기를 쓰고 있어요</p>
+          <p className="text-sm text-gray-400">오늘 산책을 기록으로 남겨드릴게요...</p>
+          <div className="mt-4 flex gap-1">
+            {[0, 1, 2].map((i) => (
+              <span
+                key={i}
+                className="h-2 w-2 animate-bounce rounded-full bg-green-300"
+                style={{ animationDelay: `${i * 0.15}s` }}
+              />
             ))}
           </div>
         </div>
       )}
 
-      {/* Bottom: latest subtitle + controls */}
-      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-5 pb-10 pt-8">
-        {latestSubtitle ? (
-          <p className="mb-5 px-2 text-center text-sm leading-relaxed text-white">
-            {latestSubtitle.text}
-          </p>
-        ) : (
-          <p className="mb-5 text-center text-xs text-white/40">
-            {isAnalyzing ? '분석 중입니다...' : '아이 눈높이로 주변을 기록하고 있어요.'}
-          </p>
-        )}
+      {/* ── Loading overlay ── */}
+      {status === 'loading' && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="text-sm text-white/60">카메라 준비 중...</div>
+        </div>
+      )}
 
-        {!voiceReady && (
-          <p className="mb-3 text-center text-xs text-white/45">
-            이 브라우저에서 한국어 음성이 늦게 준비될 수 있어요.
-          </p>
-        )}
+      {/* ── Active walk UI ── */}
+      {status === 'active' && (
+        <>
+          {/* Top bar */}
+          <div className="absolute left-0 right-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/60 to-transparent px-5 pb-6 pt-10">
+            <span className="font-mono text-2xl font-bold tracking-widest text-white">
+              {formatTime(elapsed)}
+            </span>
+            <div className="flex items-center gap-3">
+              {subtitles.length > 0 && (
+                <button
+                  onClick={() => setShowHistory((v) => !v)}
+                  className="rounded-full bg-white/20 px-3 py-1 text-xs text-white backdrop-blur-sm"
+                >
+                  해설 {subtitles.length}회 {showHistory ? '▲' : '▼'}
+                </button>
+              )}
+              <span className="text-sm text-white/70">
+                {isAnalyzing ? '분석 중...' : ''}
+              </span>
+            </div>
+          </div>
 
-        <button
-          onClick={handleStop}
-          className="w-full rounded-2xl border border-white/25 bg-white/15 py-4 font-semibold text-white backdrop-blur-md transition-transform active:scale-95"
-        >
-          산책 종료
-        </button>
-      </div>
+          {/* History panel */}
+          {showHistory && subtitles.length > 0 && (
+            <div
+              ref={historyRef}
+              className="absolute left-0 right-0 top-20 mx-4 max-h-56 overflow-y-auto rounded-2xl bg-black/60 backdrop-blur-md"
+            >
+              <div className="space-y-2 p-3">
+                {subtitles.map((entry) => (
+                  <div key={entry.id} className="flex gap-2">
+                    <span className="mt-0.5 shrink-0 font-mono text-[10px] text-white/40">
+                      {formatTime(entry.elapsed)}
+                    </span>
+                    <p className="text-xs leading-relaxed text-white/80">{entry.text}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Bottom: latest subtitle + controls */}
+          <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-5 pb-10 pt-8">
+            {latestSubtitle ? (
+              <p className="mb-5 px-2 text-center text-sm leading-relaxed text-white">
+                {latestSubtitle.text}
+              </p>
+            ) : (
+              <p className="mb-5 text-center text-xs text-white/40">
+                {isAnalyzing ? '분석 중입니다...' : '아이 눈높이로 주변을 기록하고 있어요.'}
+              </p>
+            )}
+
+            {!voiceReady && (
+              <p className="mb-3 text-center text-xs text-white/45">
+                이 브라우저에서 한국어 음성이 늦게 준비될 수 있어요.
+              </p>
+            )}
+
+            <button
+              onClick={handleStop}
+              className="w-full rounded-2xl border border-white/25 bg-white/15 py-4 font-semibold text-white backdrop-blur-md transition-transform active:scale-95"
+            >
+              산책 종료
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
