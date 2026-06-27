@@ -133,8 +133,7 @@ export default function WalkPage() {
   const subtitleCountRef = useRef(0);
   const historyRef = useRef<HTMLDivElement>(null);
   const analysisTaskRef = useRef<Promise<void> | null>(null);
-  // Resolves when user taps the start button (to unlock audio before analysis)
-  const startResolveRef = useRef<(() => void) | null>(null);
+  const startInFlightRef = useRef(false);
 
   const [status, setStatus] = useState<'loading' | 'ready' | 'active' | 'generating' | 'error'>('loading');
   const [elapsed, setElapsed] = useState(0);
@@ -144,6 +143,7 @@ export default function WalkPage() {
   const [voiceReady, setVoiceReady] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [pipelineNotice, setPipelineNotice] = useState('');
+  const [isStarting, setIsStarting] = useState(false);
 
   const formatTime = (s: number) =>
     `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
@@ -151,7 +151,7 @@ export default function WalkPage() {
   const captureFrame = useCallback((): string | null => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas || video.readyState < 2) return null;
+    if (!video || !canvas || video.readyState < 2 || !video.videoWidth) return null;
     const scale = Math.min(1, MAX_IMAGE_WIDTH / video.videoWidth);
     canvas.width = Math.floor(video.videoWidth * scale);
     canvas.height = Math.floor(video.videoHeight * scale);
@@ -232,15 +232,31 @@ export default function WalkPage() {
     }
   }, [subtitles]);
 
-  // Re-acquire wake lock on visibility change
+  // Re-acquire wake lock on visibility change; also re-unlock AudioContext on iOS
   useEffect(() => {
     const reacquire = async () => {
-      if (document.visibilityState === 'visible' && 'wakeLock' in navigator) {
-        wakeLockRef.current = await navigator.wakeLock.request('screen').catch(() => null);
+      if (document.visibilityState === 'visible') {
+        if ('wakeLock' in navigator) {
+          wakeLockRef.current = await navigator.wakeLock.request('screen').catch(() => null);
+        }
+        // iOS suspends AudioContext when page is hidden — resume it on coming back
+        if (audioCtx && audioCtx.state === 'suspended') {
+          audioCtx.resume().catch(() => {});
+        }
+      }
+    };
+    // touchstart fires from a user gesture context so AudioContext.resume() is allowed on iOS
+    const unlockOnTouch = () => {
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {});
       }
     };
     document.addEventListener('visibilitychange', reacquire);
-    return () => document.removeEventListener('visibilitychange', reacquire);
+    document.addEventListener('touchstart', unlockOnTouch, { passive: true });
+    return () => {
+      document.removeEventListener('visibilitychange', reacquire);
+      document.removeEventListener('touchstart', unlockOnTouch);
+    };
   }, []);
 
   // Pre-load browser TTS voices
@@ -282,17 +298,6 @@ export default function WalkPage() {
         babyNameRef.current = babyName;
         birthDateRef.current = birthDate;
 
-        const walkRes = await fetch('/api/walk', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ baby_age_days: babyAgeDaysRef.current }),
-        });
-        if (walkRes.status === 401) { router.replace('/login?next=/walk'); return; }
-        if (!walkRes.ok) throw new Error(`산책 생성 오류 (${walkRes.status})`);
-        const walk = await walkRes.json();
-        if (!walk?.id) throw new Error('산책 ID를 받지 못했어요.');
-        walkIdRef.current = walk.id;
-
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: 'environment' },
@@ -319,35 +324,8 @@ export default function WalkPage() {
           });
         });
 
-        // Show ready screen — wait for user tap to unlock audio before starting
+        // Preparing the camera must not create a walk record.
         setStatus('ready');
-        await new Promise<void>((resolve) => { startResolveRef.current = resolve; });
-        if (!active) return;
-
-        // User tapped: start timer and analysis loop
-        timerRef.current = setInterval(() => {
-          elapsedRef.current += 1;
-          setElapsed(elapsedRef.current);
-        }, 1000);
-
-        isActiveRef.current = true;
-        setStatus('active');
-
-        const loop = async () => {
-          await new Promise<void>((r) => setTimeout(r, INITIAL_DELAY_MS));
-          while (active && isActiveRef.current) {
-            const nextAt = Date.now() + CAPTURE_INTERVAL_MS;
-            const task = captureAndAnalyze();
-            analysisTaskRef.current = task;
-            await task;
-            if (analysisTaskRef.current === task) analysisTaskRef.current = null;
-            const wait = nextAt - Date.now();
-            if (wait > 0 && active && isActiveRef.current) {
-              await new Promise<void>((r) => setTimeout(r, wait));
-            }
-          }
-        };
-        loop();
       } catch (err) {
         setStatus('error');
         setErrorMsg(
@@ -363,19 +341,73 @@ export default function WalkPage() {
     return () => {
       active = false;
       isActiveRef.current = false;
-      startResolveRef.current?.(); // unblock setup if waiting for tap
       streamRef.current?.getTracks().forEach((t) => t.stop());
       wakeLockRef.current?.release().catch(() => {});
       if (timerRef.current) clearInterval(timerRef.current);
       window.speechSynthesis?.cancel();
     };
-  }, [captureAndAnalyze, router]);
+  }, [router]);
 
   const handleStart = useCallback(async () => {
-    // Unlock audio on this direct user gesture before analysis begins
-    await unlockAudio();
-    startResolveRef.current?.();
-  }, []);
+    if (startInFlightRef.current || isActiveRef.current) return;
+
+    startInFlightRef.current = true;
+    setIsStarting(true);
+    setPipelineNotice('산책을 시작하는 중이에요...');
+
+    try {
+      // Unlock audio on the same user gesture that creates the real walk session.
+      await unlockAudio();
+
+      const walkRes = await fetchWithTimeout('/api/walk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baby_age_days: babyAgeDaysRef.current }),
+      }, 10_000);
+      if (walkRes.status === 401) {
+        router.replace('/login?next=/walk');
+        return;
+      }
+      if (!walkRes.ok) throw new Error(`산책 생성 오류 (${walkRes.status})`);
+
+      const walk = await walkRes.json();
+      if (!walk?.id) throw new Error('산책 ID를 받지 못했어요.');
+
+      walkIdRef.current = walk.id;
+      elapsedRef.current = 0;
+      setElapsed(0);
+      isActiveRef.current = true;
+      setPipelineNotice('');
+      setStatus('active');
+
+      timerRef.current = setInterval(() => {
+        elapsedRef.current += 1;
+        setElapsed(elapsedRef.current);
+      }, 1000);
+
+      void (async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, INITIAL_DELAY_MS));
+        while (isActiveRef.current) {
+          const nextAt = Date.now() + CAPTURE_INTERVAL_MS;
+          const task = captureAndAnalyze();
+          analysisTaskRef.current = task;
+          await task;
+          if (analysisTaskRef.current === task) analysisTaskRef.current = null;
+          const wait = nextAt - Date.now();
+          if (wait > 0 && isActiveRef.current) {
+            await new Promise<void>((resolve) => setTimeout(resolve, wait));
+          }
+        }
+      })();
+    } catch (error) {
+      console.error('[walk start]', error);
+      setStatus('error');
+      setErrorMsg(error instanceof Error ? error.message : '산책을 시작할 수 없어요.');
+    } finally {
+      startInFlightRef.current = false;
+      setIsStarting(false);
+    }
+  }, [captureAndAnalyze, router]);
 
   const handleStop = async () => {
     isActiveRef.current = false;
@@ -394,7 +426,7 @@ export default function WalkPage() {
       if (activeAnalysis) {
         await Promise.race([
           activeAnalysis,
-          new Promise<void>((resolve) => setTimeout(resolve, 22_000)),
+          new Promise<void>((resolve) => setTimeout(resolve, 30_000)),
         ]);
       }
 
@@ -443,7 +475,7 @@ export default function WalkPage() {
       {status === 'error' && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-white p-6 text-center">
           <p className="mb-4 text-5xl">!</p>
-          <p className="text-lg font-semibold text-gray-800">카메라를 사용할 수 없어요.</p>
+          <p className="text-lg font-semibold text-gray-800">산책을 시작할 수 없어요.</p>
           <p className="mt-2 text-sm text-gray-400">{errorMsg}</p>
           <button
             onClick={() => router.back()}
@@ -488,9 +520,10 @@ export default function WalkPage() {
             </p>
             <button
               onClick={handleStart}
-              className="w-full rounded-2xl bg-green-400 py-5 text-lg font-bold text-white shadow-lg transition-transform active:scale-95"
+              disabled={isStarting}
+              className="w-full rounded-2xl bg-green-400 py-5 text-lg font-bold text-white shadow-lg transition-transform active:scale-95 disabled:opacity-60"
             >
-              해설 시작
+              {isStarting ? '산책 시작 중...' : '산책 시작'}
             </button>
           </div>
         </div>
