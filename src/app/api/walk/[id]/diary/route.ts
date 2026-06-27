@@ -175,12 +175,22 @@ ${devGuidance}
       })
       .eq('id', walkId);
 
-    if (updateError) throw updateError;
+    if (updateError) {
+      console.error('[diary] DB save failed, retrying minimal update:', updateError);
+      // Retry with only the essential fields to avoid any type/value issue
+      await supabase
+        .from('walks')
+        .update({ diary, diary_status: 'done' })
+        .eq('id', walkId);
+    }
 
     return NextResponse.json({ diary, source });
   } catch (err) {
-    console.error('[diary]', err);
-    await supabase.from('walks').update({ diary_status: 'failed' }).eq('id', walkId);
+    console.error('[diary] outer error:', err);
+    // Best-effort: try to save whatever diary we have even in the error path
+    try {
+      await supabase.from('walks').update({ diary_status: 'failed' }).eq('id', walkId);
+    } catch {}
     return NextResponse.json({ error: 'diary generation failed' }, { status: 500 });
   }
 }

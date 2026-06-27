@@ -179,7 +179,7 @@ export default function WalkPage() {
           walkId: walkIdRef.current,
           elapsedSec: elapsedRef.current,
         }),
-      }, 22_000);
+      }, 28_000);
       if (!analyzeRes.ok) {
         throw new Error(`해설 API 오류 (${analyzeRes.status})`);
       }
@@ -303,7 +303,10 @@ export default function WalkPage() {
         });
         if (!active) { stream.getTracks().forEach((t) => t.stop()); return; }
         streamRef.current = stream;
-        if (videoRef.current) videoRef.current.srcObject = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(() => {});
+        }
 
         if ('wakeLock' in navigator) {
           wakeLockRef.current = await navigator.wakeLock.request('screen').catch(() => null);
