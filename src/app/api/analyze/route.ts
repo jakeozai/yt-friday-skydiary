@@ -75,7 +75,7 @@ ${devContext}
     const [result, image_url] = await Promise.all([
       Promise.race([
         model.generateContent([prompt, imagePart]),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000)),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 25000)),
       ]),
       shouldUpload ? uploadToR2(imageBase64, walkId, elapsedSec) : Promise.resolve(null),
     ]);
@@ -84,6 +84,8 @@ ${devContext}
     return NextResponse.json({ text, image_url, source: 'gemini' });
   } catch (err) {
     console.error('[analyze]', err);
-    return NextResponse.json({ error: 'analyze failed' }, { status: 500 });
+    // Return fallback so the client can still save the observation and speak something
+    const text = fallbackLines[Math.floor(Math.random() * fallbackLines.length)];
+    return NextResponse.json({ text, image_url: null, source: 'fallback' });
   }
 }

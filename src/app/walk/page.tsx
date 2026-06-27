@@ -66,6 +66,8 @@ function speakKorean(text: string): Promise<void> {
 }
 
 // ─── API TTS ─────────────────────────────────────────────────────────────────
+// Uses AudioContext.decodeAudioData + AudioBufferSourceNode to completely bypass
+// mobile browser autoplay restrictions (no HTMLMediaElement involved).
 
 async function playApiTts(text: string): Promise<boolean> {
   try {
@@ -77,19 +79,16 @@ async function playApiTts(text: string): Promise<boolean> {
     if (!res.ok) return false;
 
     const arrayBuffer = await res.arrayBuffer();
+    const ctx = getAudioContext();
+    if (ctx.state === 'suspended') await ctx.resume();
+
+    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
     return new Promise<boolean>((resolve) => {
-      const blob = new Blob([arrayBuffer], { type: 'audio/mpeg' });
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      // Pipe through AudioContext so it uses the unlocked context
-      try {
-        const ctx = getAudioContext();
-        const source = ctx.createMediaElementSource(audio);
-        source.connect(ctx.destination);
-      } catch {}
-      audio.onended = () => { URL.revokeObjectURL(url); resolve(true); };
-      audio.onerror = () => { URL.revokeObjectURL(url); resolve(false); };
-      audio.play().catch(() => { URL.revokeObjectURL(url); resolve(false); });
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      source.onended = () => resolve(true);
+      source.start(0);
     });
   } catch {
     return false;

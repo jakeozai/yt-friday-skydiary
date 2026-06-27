@@ -125,7 +125,7 @@ ${devGuidance}
 
     const result = await Promise.race([
       model.generateContent(prompt),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 30000)),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 55000)),
     ]);
 
     const diary = result.response.text().trim();
