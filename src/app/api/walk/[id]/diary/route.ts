@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { requireAuth } from '@/lib/auth';
 import { createServerSupabase, hasServerSupabaseConfig } from '@/lib/supabase/server';
+import { checkAndCharge, DIARY_COST_USD } from '@/lib/budget';
 
 // Extend Vercel function timeout — diary generation via Gemini can take 20-30s
 export const maxDuration = 60;
@@ -143,6 +144,12 @@ ${devGuidance}
     let source: 'gemini' | 'fallback' = 'gemini';
     try {
       if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY missing');
+
+      const budget = await checkAndCharge(DIARY_COST_USD);
+      if (!budget.allowed) {
+        // Budget exceeded — use free fallback so we don't call Gemini
+        throw new Error('daily_limit_exceeded');
+      }
       const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
       const model = genAI.getGenerativeModel({
         model: GEMINI_MODEL,

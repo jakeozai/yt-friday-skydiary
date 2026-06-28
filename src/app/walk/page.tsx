@@ -180,6 +180,13 @@ export default function WalkPage() {
           elapsedSec: elapsedRef.current,
         }),
       }, 28_000);
+      if (analyzeRes.status === 429) {
+        const body = await analyzeRes.json().catch(() => ({}));
+        const msg = body.message ?? '오늘은 AI 친구가 많이 지쳤어요 😴 내일 다시 산책해요!';
+        setPipelineNotice(msg);
+        isActiveRef.current = false; // stop the loop — no point retrying today
+        return;
+      }
       if (!analyzeRes.ok) {
         throw new Error(`해설 API 오류 (${analyzeRes.status})`);
       }

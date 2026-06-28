@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { requireAuth } from '@/lib/auth';
 import { uploadToR2 } from '@/lib/r2';
+import { checkAndCharge, ANALYZE_COST_USD } from '@/lib/budget';
 
 export const maxDuration = 30;
 
@@ -50,6 +51,11 @@ export async function POST(request: Request) {
     if (!process.env.GEMINI_API_KEY) {
       const text = fallbackLines[Math.floor(Math.random() * fallbackLines.length)];
       return NextResponse.json({ text, image_url: null, source: 'local-fallback' });
+    }
+
+    const budget = await checkAndCharge(ANALYZE_COST_USD);
+    if (!budget.allowed) {
+      return NextResponse.json({ error: 'daily_limit_exceeded', message: budget.message }, { status: 429 });
     }
 
     const ageDays = typeof babyAgeDays === 'number' && babyAgeDays >= 0 ? babyAgeDays : 0;
