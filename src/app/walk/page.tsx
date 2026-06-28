@@ -209,17 +209,20 @@ export default function WalkPage() {
         setPipelineNotice('');
       }
 
-      if (isActiveRef.current) void speak(text);
-
-      const observationRes = await fetchWithTimeout(`/api/walk/${walkIdRef.current}/observations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          elapsed_sec: elapsedRef.current,
-          description: text,
-          image_url: image_url ?? null,
-        }),
-      }, 10_000);
+      // Speak and save observation concurrently; await both so next capture
+      // starts right after narration ends (not on a fixed 30s timer).
+      const [, observationRes] = await Promise.all([
+        isActiveRef.current ? speak(text) : Promise.resolve(false),
+        fetchWithTimeout(`/api/walk/${walkIdRef.current}/observations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            elapsed_sec: elapsedRef.current,
+            description: text,
+            image_url: image_url ?? null,
+          }),
+        }, 10_000),
+      ]);
       if (!observationRes.ok) {
         throw new Error(`해설 저장 오류 (${observationRes.status})`);
       }
@@ -396,15 +399,11 @@ export default function WalkPage() {
       void (async () => {
         await new Promise<void>((resolve) => setTimeout(resolve, INITIAL_DELAY_MS));
         while (isActiveRef.current) {
-          const nextAt = Date.now() + CAPTURE_INTERVAL_MS;
           const task = captureAndAnalyze();
           analysisTaskRef.current = task;
           await task;
           if (analysisTaskRef.current === task) analysisTaskRef.current = null;
-          const wait = nextAt - Date.now();
-          if (wait > 0 && isActiveRef.current) {
-            await new Promise<void>((resolve) => setTimeout(resolve, wait));
-          }
+          // No fixed interval — next capture starts right after narration ends
         }
       })();
     } catch (error) {

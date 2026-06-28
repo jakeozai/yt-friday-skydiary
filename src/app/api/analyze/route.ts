@@ -63,15 +63,15 @@ export async function POST(request: Request) {
     const name = typeof babyName === 'string' && babyName.trim() ? babyName.trim() : '아기';
     const devContext = getDevelopmentalContext(months);
 
-    const prompt = `당신은 아기와 함께하는 순간을 따뜻하게 기록하는 해설자입니다.
+    const prompt = `당신은 아기와 함께하는 산책을 따뜻하게 기록하는 해설자입니다.
 지금 ${ageDays}일(${months}개월) 된 ${name}의 눈높이 카메라로 촬영한 장면입니다.
 
-[이 시기 ${name}의 발달 특성]
+[이 시기 ${name}의 발달 특성 — 이 특성을 해설에 녹여주세요]
 ${devContext}
 
-카메라에 무엇이 보이든 — 자연, 거리, 사람, 건물, 가게, 자동차, 실내 공간, 사물 등 — 모두 ${name}에게는 처음 만나는 세상입니다.
-지금 이 장면에서 ${name}가 무엇을 보고, 느끼고, 경험하고 있을지 아이의 시선으로 따뜻하게 표현해주세요.
-기술적인 설명은 피하고, 2문장 이내로 짧게 말해주세요.`;
+이 발달 특성을 바탕으로, 지금 보이는 장면에서 ${name}가 구체적으로 무엇을 어떻게 인식하고 느낄지 표현해주세요.
+예를 들어 이 시기 아기의 시야 범위, 반응하는 자극, 관심 가질 요소 등을 장면과 연결해 자연스럽게 말해주세요.
+따뜻하고 생생한 말투로, 2문장 이내로 짧게 말해주세요.`;
 
     const imagePart = {
       inlineData: { data: imageBase64, mimeType: 'image/jpeg' as const },
