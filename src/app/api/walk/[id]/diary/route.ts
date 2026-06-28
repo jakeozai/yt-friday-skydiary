@@ -126,16 +126,17 @@ export async function POST(
 ${babyName} 나이: ${babyAgeDays}일 (${months}개월 ${babyAgeDays % 30}일)
 산책 시간: ${durationMin}분
 날씨: ${weatherStr}
-${obsLines ? `\n[산책 중 관찰된 것들]\n${obsLines}` : ''}
+${obsLines ? `\n[산책 중 AI가 관찰한 장면들 — 이 장면들을 모두 일기에 녹여주세요]\n${obsLines}` : ''}
 
 [이 시기 ${babyName}의 발달 단계]
 ${devGuidance}
 
-위 기록과 발달 단계를 바탕으로, 따뜻하고 자연스러운 한국어 산책 일기를 작성해주세요.
-- ${babyName}의 이름을 자연스럽게 사용해주세요.
-- 이 개월 수 아이의 감각과 정서 발달에 맞게 표현해주세요.
-- 오늘 산책에서 인상적인 장면을 ${babyName}의 눈높이로 담아주세요.
-- 300~400자 분량으로 써주세요.
+위 관찰 기록을 바탕으로 오늘 산책 일기를 작성해주세요.
+- 관찰된 장면들을 시간 순서대로 자연스럽게 연결해 하나의 이야기로 써주세요.
+- 각 장면에서 ${babyName}가 무엇을 보고 어떻게 느꼈을지 아이의 눈높이로 표현해주세요.
+- ${babyName}의 이름을 문장 안에 자연스럽게 녹여주세요.
+- 이 개월 수 아이의 감각·정서 발달에 맞는 표현을 써주세요.
+- 완결된 문장으로 끝맺어 주세요. 400~500자 분량.
 - 제목 없이 본문만 작성해주세요.`;
 
     let diary: string;
@@ -147,7 +148,7 @@ ${devGuidance}
         model: GEMINI_MODEL,
         generationConfig: {
           temperature: 0.8,
-          maxOutputTokens: 600,
+          maxOutputTokens: 1200,
         },
       });
       const result = await Promise.race([
