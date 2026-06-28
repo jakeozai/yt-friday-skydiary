@@ -122,23 +122,26 @@ export async function POST(
     const months = Math.floor(babyAgeDays / 30);
     const devGuidance = getDiaryDevelopmentalGuidance(months);
 
-    const prompt = `오늘 ${babyName}와 함께한 산책 기록입니다.
-날짜: ${date}
-${babyName} 나이: ${babyAgeDays}일 (${months}개월 ${babyAgeDays % 30}일)
-산책 시간: ${durationMin}분
-날씨: ${weatherStr}
-${obsLines ? `\n[산책 중 AI가 관찰한 장면들 — 이 장면들을 모두 일기에 녹여주세요]\n${obsLines}` : ''}
+    const prompt = obsLines
+      ? `${date}, ${weatherStr} 날씨. ${babyName}(${months}개월)와 ${durationMin}분 산책.
 
-[이 시기 ${babyName}의 발달 단계]
+[오늘 산책에서 실제로 본 장면들]
+${obsLines}
+
+위 장면들을 중심으로 오늘 산책 일기를 써주세요.
+- 각 장면에서 실제로 본 것(빛, 색, 소리, 움직임, 공기)을 구체적으로 살려주세요.
+- 시간 순서대로 이어가되 하나의 흐름 있는 이야기로 연결해주세요.
+- ${babyName}가 그 장면들 속에서 무엇을 느꼈을지 아이 눈높이로 표현해주세요.
+- 완결된 문장으로 마무리, 제목 없이 본문만, 400~500자.`
+      : `${date}, ${weatherStr} 날씨. ${babyName}(${months}개월)와 ${durationMin}분 산책했어요.
+
+[이 시기 ${babyName}의 특성]
 ${devGuidance}
 
-위 관찰 기록을 바탕으로 오늘 산책 일기를 작성해주세요.
-- 관찰된 장면들을 시간 순서대로 자연스럽게 연결해 하나의 이야기로 써주세요.
-- 각 장면에서 ${babyName}가 무엇을 보고 어떻게 느꼈을지 아이의 눈높이로 표현해주세요.
-- ${babyName}의 이름을 문장 안에 자연스럽게 녹여주세요.
-- 이 개월 수 아이의 감각·정서 발달에 맞는 표현을 써주세요.
-- 완결된 문장으로 끝맺어 주세요. 400~500자 분량.
-- 제목 없이 본문만 작성해주세요.`;
+오늘 산책 경험을 따뜻하게 담은 일기를 써주세요.
+- 날씨와 계절감, 바깥 공기, 풍경을 구체적으로 묘사해주세요.
+- ${babyName}가 느꼈을 감각과 정서를 아이 눈높이로 표현해주세요.
+- 완결된 문장으로 마무리, 제목 없이 본문만, 400~500자.`;
 
     let diary: string;
     let source: 'gemini' | 'fallback' = 'gemini';
