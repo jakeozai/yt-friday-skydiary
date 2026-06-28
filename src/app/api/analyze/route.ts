@@ -37,7 +37,7 @@ export async function POST(request: Request) {
   if (unauthorized) return unauthorized;
 
   try {
-    const { imageBase64, babyAgeDays, babyName, walkId, elapsedSec } = await request.json();
+    const { imageBase64, babyAgeDays, babyName, birthDate, walkId, elapsedSec } = await request.json();
 
     if (typeof imageBase64 !== 'string' || imageBase64.length > MAX_IMAGE_BASE64_CHARS) {
       return NextResponse.json({ error: 'Invalid image payload' }, { status: 413 });
@@ -53,7 +53,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ text, image_url: null, source: 'local-fallback' });
     }
 
-    const budget = await checkAndCharge(ANALYZE_COST_USD);
+    const budget = await checkAndCharge(ANALYZE_COST_USD, babyName, birthDate);
     if (!budget.allowed) {
       return NextResponse.json({ error: 'daily_limit_exceeded', message: budget.message }, { status: 429 });
     }

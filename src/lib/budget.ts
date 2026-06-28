@@ -6,12 +6,22 @@ import { isMissingSupabaseTable } from './supabase/errors';
 const DAILY_LIMIT_USD = 1.81 / 31; // ≈ $0.0584
 
 // Cost estimates with 2x safety margin over actual Gemini 2.5 Flash pricing
-export const ANALYZE_COST_USD = 0.0001;  // ~$0.000058 actual, rounded up
-export const DIARY_COST_USD   = 0.0005;  // ~$0.00029 actual, rounded up
+export const ANALYZE_COST_USD = 0.0001;
+export const DIARY_COST_USD   = 0.0005;
 
-const OVER_LIMIT_MESSAGE =
-  '오늘은 친구들이 너무 많이 와서 AI가 많이 지쳤어요 😴 ' +
-  '엄마 아빠, 한국 시간으로 자정이 지나면 다시 산책 나가요! 🌙';
+const OVER_LIMIT_MESSAGE = '현재 사용자가 많아 내일 다시 이용해주세요.';
+
+// Unlimited access list — these babies are never subject to the budget cap
+const UNLIMITED: Array<{ name: string; birthDate: string }> = [
+  { name: '재이', birthDate: '2026-03-02' },
+];
+
+function isUnlimited(babyName?: string | null, birthDate?: string | null): boolean {
+  if (!babyName || !birthDate) return false;
+  return UNLIMITED.some(
+    (u) => u.name === babyName.trim() && u.birthDate === birthDate.trim()
+  );
+}
 
 /** Returns today's date string in KST (UTC+9), e.g. "2026-06-28" */
 function todayKST(): string {
@@ -20,15 +30,17 @@ function todayKST(): string {
 }
 
 /**
- * Check whether adding `costUsd` would exceed today's budget.
- * If allowed, records the cost atomically (read-then-write — acceptable for low traffic).
- * If the daily_costs table doesn't exist yet, allows the call (graceful degradation).
- *
- * Returns { allowed: true } or { allowed: false, message: string }
+ * Check whether adding `costUsd` would exceed today's budget, then record the cost.
+ * Pass babyName + birthDate to skip the cap for whitelisted users.
+ * Fails open (table missing or DB error → allow call).
  */
 export async function checkAndCharge(
-  costUsd: number
+  costUsd: number,
+  babyName?: string | null,
+  birthDate?: string | null,
 ): Promise<{ allowed: true } | { allowed: false; message: string }> {
+  if (isUnlimited(babyName, birthDate)) return { allowed: true };
+
   try {
     const supabase = createServerSupabase();
     const today = todayKST();
@@ -40,9 +52,9 @@ export async function checkAndCharge(
       .maybeSingle();
 
     if (readError) {
-      if (isMissingSupabaseTable(readError)) return { allowed: true }; // table not created yet
+      if (isMissingSupabaseTable(readError)) return { allowed: true };
       console.error('[budget] read error:', readError);
-      return { allowed: true }; // fail open on unexpected errors
+      return { allowed: true };
     }
 
     const current = data?.cost_usd ?? 0;
@@ -51,7 +63,6 @@ export async function checkAndCharge(
       return { allowed: false, message: OVER_LIMIT_MESSAGE };
     }
 
-    // Record the cost
     if (data) {
       await supabase
         .from('daily_costs')
@@ -66,6 +77,6 @@ export async function checkAndCharge(
     return { allowed: true };
   } catch (err) {
     console.error('[budget] unexpected error:', err);
-    return { allowed: true }; // fail open so a DB issue doesn't break the app
+    return { allowed: true };
   }
 }

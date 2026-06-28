@@ -176,6 +176,7 @@ export default function WalkPage() {
           imageBase64,
           babyAgeDays: babyAgeDaysRef.current,
           babyName: babyNameRef.current,
+          birthDate: birthDateRef.current,
           walkId: walkIdRef.current,
           elapsedSec: elapsedRef.current,
         }),

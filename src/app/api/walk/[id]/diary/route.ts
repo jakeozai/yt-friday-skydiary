@@ -145,7 +145,7 @@ ${devGuidance}
     try {
       if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY missing');
 
-      const budget = await checkAndCharge(DIARY_COST_USD);
+      const budget = await checkAndCharge(DIARY_COST_USD, clientBabyName, clientBirthDate);
       if (!budget.allowed) {
         // Budget exceeded — use free fallback so we don't call Gemini
         throw new Error('daily_limit_exceeded');
